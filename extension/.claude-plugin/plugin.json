@@ -1,0 +1,9 @@
+{
+  "name": "tribecode",
+  "description": "TribeCode AI analytics and agent orchestration for Claude Code",
+  "version": "1.0.0",
+  "author": {
+    "name": "TribeCode",
+    "email": "support@tribecode.ai"
+  }
+}
