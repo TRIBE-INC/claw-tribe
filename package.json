@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "tribecode-clawdbot",
+  "description": "TribeCode ClawdBot integration - dev workspace",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

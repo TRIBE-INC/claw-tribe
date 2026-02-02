@@ -1,0 +1,9 @@
+{
+  "dashboard_url": "https://tribecode.ai",
+  "tutor_server_url": "https://tutor.tribecode.ai",
+  "last_updated": "2026-02-01T14:12:25-08:00",
+  "config_version": "1.0",
+  "sync_mode": "sync_all",
+  "first_run_prompt_shown": true,
+  "server": {}
+}

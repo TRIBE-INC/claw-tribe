@@ -1,0 +1,15 @@
+{
+  "name": "@tribecode/tribecode",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "TribeCode AI analytics and agent orchestration for ClawdBot",
+  "clawdbot": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "clawdbot": ">=2026.1.0"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  }
+}
