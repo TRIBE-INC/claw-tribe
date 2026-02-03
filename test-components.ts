@@ -587,7 +587,7 @@ async function testIndexWiring() {
   // 8.5 plugin.json matches index.ts configSchema
   const fs = await import("node:fs/promises");
   const jsonSchema = JSON.parse(
-    await fs.readFile("/Users/almorris/TRIBE/openclaw/extension/clawdbot.plugin.json", "utf-8"),
+    await fs.readFile(new URL("./extension/clawdbot.plugin.json", import.meta.url).pathname, "utf-8"),
   );
   const jsonKeys = Object.keys(jsonSchema.configSchema.properties).sort();
   const tsKeys = Object.keys(props).sort();

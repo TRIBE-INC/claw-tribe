@@ -1,4 +1,7 @@
 import { ensureInstalled, run } from "./tribe-runner.js";
+import { SemanticSearch } from "./semantic-search.js";
+import { SmartSuggestions } from "./smart-suggestions.js";
+import { Logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // JSON extraction — TRIBE CLI sometimes writes tips/warnings to stdout
@@ -52,6 +55,37 @@ interface KBMatch {
 interface CachedContext {
   sessions: SessionMeta[];
   fetchedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Semantic Search & Smart Suggestions (lazy initialization)
+// ---------------------------------------------------------------------------
+
+let semanticSearchInstance: SemanticSearch | null = null;
+let smartSuggestionsInstance: SmartSuggestions | null = null;
+
+function getSemanticSearch(): SemanticSearch | null {
+  if (!semanticSearchInstance && process.env.OPENAI_API_KEY) {
+    try {
+      const logger = new Logger('context-builder');
+      semanticSearchInstance = new SemanticSearch(logger);
+    } catch (error) {
+      // Semantic search not available
+      return null;
+    }
+  }
+  return semanticSearchInstance;
+}
+
+function getSmartSuggestions(): SmartSuggestions | null {
+  const semantic = getSemanticSearch();
+  if (!semantic) return null;
+
+  if (!smartSuggestionsInstance) {
+    const logger = new Logger('context-builder');
+    smartSuggestionsInstance = new SmartSuggestions(semantic, logger);
+  }
+  return smartSuggestionsInstance;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +233,28 @@ async function runKBSearch(term: string): Promise<KBMatch[]> {
 }
 
 async function searchKB(query: string): Promise<KBMatch[]> {
+  // Try semantic search first if available
+  const semantic = getSemanticSearch();
+  if (semantic && semantic.isInitialized()) {
+    try {
+      const results = await semantic.search(query, {
+        limit: 5,
+        minSimilarity: 0.7
+      });
+
+      if (results.length > 0) {
+        return results.map(r => ({
+          id: r.entry.id,
+          category: r.entry.category,
+          text: r.entry.content
+        }));
+      }
+    } catch (error) {
+      // Fall back to keyword search
+    }
+  }
+
+  // Fallback to keyword search
   const keyword = extractSearchKeyword(query);
   const results = await runKBSearch(keyword);
   if (results.length > 0) return results;
@@ -287,6 +343,7 @@ function detectActiveProject(sessions: SessionMeta[]): string {
 export async function buildContext(
   prompt: string,
   depth: ContextDepth = "standard",
+  messages?: Array<{ role: string; content: any }>,
 ): Promise<string | null> {
   // Bail early if TRIBE CLI is not installed
   const installed = await ensureInstalled();
@@ -323,7 +380,24 @@ export async function buildContext(
 
   if (parts.length === 0) return null;
 
-  return `<tribe-context>\n${parts.join("\n\n")}\n</tribe-context>`;
+  let context = `<tribe-context>\n${parts.join("\n\n")}\n</tribe-context>`;
+
+  // Add smart suggestions if messages provided
+  if (messages && messages.length >= 2) {
+    const suggestions = getSmartSuggestions();
+    if (suggestions) {
+      try {
+        context = await suggestions.injectSuggestions(
+          messages as any,
+          context
+        );
+      } catch (error) {
+        // Continue without suggestions if error
+      }
+    }
+  }
+
+  return context;
 }
 
 /**

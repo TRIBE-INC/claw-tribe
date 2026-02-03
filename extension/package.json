@@ -2,14 +2,15 @@
   "name": "@tribecode/tribecode",
   "version": "1.0.0",
   "type": "module",
-  "description": "TribeCode AI analytics and agent orchestration for ClawdBot",
-  "clawdbot": {
+  "description": "TribeCode AI analytics and agent orchestration for OpenClaw",
+  "openclaw": {
     "extensions": ["./index.ts"]
   },
   "peerDependencies": {
-    "clawdbot": ">=2026.1.0"
+    "openclaw": ">=2026.1.0"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.0"
+    "@sinclair/typebox": "^0.34.0",
+    "openai": "^4.0.0"
   }
 }

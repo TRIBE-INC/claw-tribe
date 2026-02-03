@@ -3,6 +3,8 @@ import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
 import { ensureInstalled, checkAuthStatus, run, runJson, runText } from "./lib/tribe-runner.js";
 import { buildContext, invalidateCache, type ContextDepth } from "./lib/context-builder.js";
 import { captureConversation } from "./lib/knowledge-capture.js";
+import { SessionAnalyzer } from "./lib/session-analyzer.js";
+import { Logger } from "./lib/logger.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,6 +18,7 @@ type ToolDef = {
   execute: (
     _id: string,
     params: Record<string, unknown>,
+    context?: { messages?: Array<{ role: string; content: any }> },
   ) => Promise<{ content: Array<{ type: "text"; text: string }>; details?: unknown }>;
 };
 
@@ -681,6 +684,287 @@ function circuitTools(): ToolDef[] {
 }
 
 // ---------------------------------------------------------------------------
+// Session Analysis Tools (NEW)
+// ---------------------------------------------------------------------------
+
+function sessionAnalysisTools(analyzer: SessionAnalyzer): ToolDef[] {
+  return [
+    {
+      name: "tribe_analyze_sessions",
+      label: "Analyze Sessions",
+      description:
+        "Mine improvement signals from recent OpenClaw sessions. Detects errors, " +
+        "user frustration, and improvement opportunities automatically.",
+      parameters: Type.Object({
+        maxSessions: Type.Optional(
+          Type.Number({ description: "Maximum number of sessions to analyze (default: 50)" })
+        ),
+        sessionIds: Type.Optional(
+          Type.Array(Type.String(), { description: "Specific session IDs to analyze" })
+        ),
+      }),
+      async execute(_id, params) {
+        const result = await analyzer.analyze({
+          maxSessions: params.maxSessions as number | undefined,
+          sessionIds: params.sessionIds as string[] | undefined,
+        });
+
+        const summary = [
+          `Found ${result.signals.length} signals in ${result.rollups.length} clusters.`,
+          "",
+          "Top Issues:",
+          ...result.topIssues.slice(0, 5).map((issue, idx) =>
+            `${idx + 1}. [${issue.max_severity}] ${issue.canonical_summary} (score: ${issue.score.toFixed(1)})`
+          ),
+        ];
+
+        return textResult(summary.join("\n"), {
+          signalCount: result.signals.length,
+          rollupCount: result.rollups.length,
+          topIssues: result.topIssues,
+        });
+      },
+    },
+    {
+      name: "tribe_rollup_details",
+      label: "Rollup Details",
+      description: "Get detailed information about a signal rollup/cluster",
+      parameters: Type.Object({
+        rollupId: Type.String({ description: "Rollup fingerprint ID" }),
+      }),
+      async execute(_id, params) {
+        // This would retrieve from a cache in a real implementation
+        return textResult(
+          `Rollup details for ${params.rollupId}.\n\n` +
+          "Run tribe_analyze_sessions first to generate rollups.",
+        );
+      },
+    },
+    {
+      name: "tribe_generate_brief",
+      label: "Generate Research Brief",
+      description: "Generate detailed research brief for an issue using actor-critic pattern",
+      parameters: Type.Object({
+        rollupId: Type.String({ description: "Rollup fingerprint ID to research" }),
+      }),
+      async execute(_id, params) {
+        const brief = await analyzer.generateBrief(params.rollupId as string);
+
+        const summary = [
+          `# ${brief.title}`,
+          "",
+          "## Evidence Snapshot",
+          brief.evidence.substring(0, 500) + "...",
+          "",
+          "## Analysis",
+          brief.analysis.substring(0, 500) + "...",
+          "",
+          "## Recommendations",
+          brief.recommendations,
+        ];
+
+        return textResult(summary.join("\n"), { brief });
+      },
+    },
+    {
+      name: "tribe_self_improve",
+      label: "Self-Improve",
+      description:
+        "Run full self-improvement pipeline: analyze sessions, cluster issues, " +
+        "and generate research briefs for top problems",
+      parameters: Type.Object({
+        maxSessions: Type.Optional(
+          Type.Number({ description: "Maximum sessions to analyze (default: 100)" })
+        ),
+      }),
+      async execute(_id, params) {
+        const result = await analyzer.analyze({
+          maxSessions: (params.maxSessions as number) || 100,
+        });
+
+        // Generate briefs for top 3 issues
+        const briefs = [];
+        for (const issue of result.topIssues.slice(0, 3)) {
+          try {
+            const brief = await analyzer.generateBrief(issue.fingerprint_id);
+            briefs.push(brief.title);
+          } catch (err) {
+            // Brief generation might fail, continue with others
+          }
+        }
+
+        const summary = [
+          "Self-Improvement Analysis Complete",
+          "",
+          `Analyzed ${result.signals.length} signals from sessions`,
+          `Found ${result.topIssues.length} top issues`,
+          `Generated ${briefs.length} research briefs`,
+          "",
+          "Research Briefs:",
+          ...briefs.map((title, idx) => `${idx + 1}. ${title}`),
+        ];
+
+        return textResult(summary.join("\n"), {
+          signalCount: result.signals.length,
+          issueCount: result.topIssues.length,
+          briefCount: briefs.length,
+        });
+      },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Semantic Search & Smart Suggestions Tools (NEW)
+// ---------------------------------------------------------------------------
+
+function semanticTools(): ToolDef[] {
+  return [
+    {
+      name: "tribe_semantic_search",
+      label: "Semantic Search",
+      description:
+        "Search knowledge base using semantic similarity (vector embeddings). " +
+        "Finds conceptually related content, not just keyword matches.",
+      parameters: Type.Object({
+        query: Type.String({ description: "Search query" }),
+        limit: Type.Optional(
+          Type.Number({ description: "Max results (default: 10)" })
+        ),
+        minSimilarity: Type.Optional(
+          Type.Number({ description: "Minimum similarity score 0-1 (default: 0.7)" })
+        ),
+      }),
+      async execute(_id, params) {
+        const { SemanticSearch } = await import("./lib/semantic-search.js");
+        const { Logger } = await import("./lib/logger.js");
+
+        const semantic = new SemanticSearch(new Logger("semantic-search"));
+
+        if (!semantic.isInitialized()) {
+          return textResult(
+            "Vector index not initialized. Run tribe_reindex_knowledge first."
+          );
+        }
+
+        const results = await semantic.search(params.query as string, {
+          limit: (params.limit as number) || 10,
+          minSimilarity: (params.minSimilarity as number) || 0.7,
+        });
+
+        if (results.length === 0) {
+          return textResult("No results found.");
+        }
+
+        const lines = [
+          `Found ${results.length} results:`,
+          "",
+          ...results.map((r, idx) => {
+            const preview = r.entry.content.substring(0, 200) + "...";
+            return `${idx + 1}. [${r.entry.category}] ${preview}\n   (${(r.similarity * 100).toFixed(0)}% similarity, ${r.relevance} relevance)`;
+          }),
+        ];
+
+        return textResult(lines.join("\n"), { results });
+      },
+    },
+    {
+      name: "tribe_reindex_knowledge",
+      label: "Reindex Knowledge",
+      description:
+        "Rebuild semantic search vector index for all knowledge base entries. " +
+        "Run this after adding new KB content or on first use.",
+      parameters: Type.Object({}),
+      async execute() {
+        const { SemanticSearch } = await import("./lib/semantic-search.js");
+        const { Logger } = await import("./lib/logger.js");
+
+        const semantic = new SemanticSearch(new Logger("semantic-search"));
+
+        // Get all KB entries
+        const kbResult = await run(["kb", "list", "--format", "json"], {
+          timeout: "slow",
+        });
+
+        if (kbResult.exitCode !== 0) {
+          return textResult("Failed to list knowledge base entries.");
+        }
+
+        const kbEntries = JSON.parse(kbResult.stdout);
+
+        if (!Array.isArray(kbEntries) || kbEntries.length === 0) {
+          return textResult("No knowledge base entries found.");
+        }
+
+        // Index them
+        await semantic.indexKnowledge(
+          kbEntries.map((e: any) => ({
+            id: e.id || String(Math.random()),
+            content: e.content || e.text || "",
+            category: e.category || "general",
+            tags: e.tags || [],
+            timestamp: e.timestamp || Date.now(),
+          }))
+        );
+
+        return textResult(
+          `Successfully indexed ${kbEntries.length} knowledge base entries.\n\n` +
+          "Semantic search is now available!"
+        );
+      },
+    },
+    {
+      name: "tribe_suggest_knowledge",
+      label: "Suggest Knowledge",
+      description:
+        "Get smart knowledge suggestions based on current conversation context. " +
+        "Proactively finds relevant past insights.",
+      parameters: Type.Object({
+        limit: Type.Optional(
+          Type.Number({ description: "Max suggestions (default: 5)" })
+        ),
+      }),
+      async execute(_id, params, context) {
+        const { SemanticSearch } = await import("./lib/semantic-search.js");
+        const { SmartSuggestions } = await import("./lib/smart-suggestions.js");
+        const { Logger } = await import("./lib/logger.js");
+
+        const logger = new Logger("smart-suggestions");
+        const semantic = new SemanticSearch(logger);
+
+        if (!semantic.isInitialized()) {
+          return textResult(
+            "Semantic search not initialized. Run tribe_reindex_knowledge first."
+          );
+        }
+
+        const suggestions = new SmartSuggestions(semantic, logger);
+
+        const results = await suggestions.suggestRelevant(
+          context.messages || [],
+          { limit: (params.limit as number) || 5 }
+        );
+
+        if (results.length === 0) {
+          return textResult("No relevant suggestions found for this conversation.");
+        }
+
+        const lines = [
+          `Found ${results.length} relevant suggestions:`,
+          "",
+          ...results.map((s, idx) => {
+            const preview = s.content.substring(0, 150) + "...";
+            return `${idx + 1}. [${s.category}] ${preview}\n   ${s.reason} (${(s.similarity * 100).toFixed(0)}% match)`;
+          }),
+        ];
+
+        return textResult(lines.join("\n"), { suggestions: results });
+      },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
 
@@ -727,6 +1011,13 @@ const tribecodePlugin = {
     } | undefined;
 
     // -------------------------------------------------------------------
+    // Initialize Session Analyzer
+    // -------------------------------------------------------------------
+
+    const logger = new Logger("tribecode");
+    const sessionAnalyzer = new SessionAnalyzer(logger);
+
+    // -------------------------------------------------------------------
     // Startup health check — tell the user what's going on
     // -------------------------------------------------------------------
 
@@ -767,6 +1058,8 @@ const tribecodePlugin = {
       ...kbTools(),
       ...museTools(),
       ...circuitTools(),
+      ...sessionAnalysisTools(sessionAnalyzer),
+      ...semanticTools(),
     ];
 
     for (const tool of allTools) {
@@ -815,7 +1108,7 @@ const tribecodePlugin = {
 
       try {
         const depth = pluginCfg?.contextDepth ?? "standard";
-        const context = await buildContext(event.prompt, depth);
+        const context = await buildContext(event.prompt, depth, event.messages);
         if (!context) {
           api.logger.debug("tribecode: no relevant context found for this prompt.");
           return;
