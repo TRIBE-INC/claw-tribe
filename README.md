@@ -189,6 +189,64 @@ On every `agent_end` event (when `autoCapture` is enabled and the conversation s
 5. **Summary building** -- Takes the last 3 substantive messages, truncates each to 500 characters, and joins them.
 6. **KB save** -- Saves to TRIBE KB with a `[ClawdBot <category>]` prefix and tags line. Fire-and-forget with a 10-second timeout.
 
+## CLI Wrapper
+
+The plugin includes a CLI wrapper that extends the `tribe` command with additional functionality for authentication, session sync, and interaction logging.
+
+### Authentication
+
+```bash
+tribe auth login      # Open browser for OAuth login via tribecode.ai
+tribe auth status     # Check authentication status
+tribe auth logout     # Clear stored credentials
+tribe auth whoami     # Display current user info
+tribe auth refresh    # Manually refresh access token
+```
+
+### Session Sync
+
+```bash
+tribe sync            # Sync pending sessions to tutor.tribecode.ai
+tribe sync --status   # Show sync status (pending, synced, last sync time)
+tribe sync --force    # Force re-upload all sessions
+tribe sync --auto     # Toggle automatic background sync
+```
+
+### Interaction Logs
+
+```bash
+tribe logs            # View recent interaction logs
+tribe logs --watch    # Watch logs in real-time
+tribe logs --actor clawdbot  # Filter by actor (user, clawdbot, muse-leader, etc.)
+tribe logs --type tool_call  # Filter by type (message, tool_call, spawn, etc.)
+tribe logs --since 1h        # Show logs since 1h, 24h, or 7d
+tribe logs --json            # Output as JSON
+tribe logs --sessions        # List log sessions
+```
+
+### Telemetry
+
+The CLI wrapper includes a telemetry client that sends session data to `tutor.tribecode.ai`:
+
+- **Event Queue**: Events are batched and flushed periodically (default: every 30s or when 50 events queued)
+- **Auth Token Management**: Tokens auto-refresh 5 minutes before expiry
+- **Offline Support**: Events queue locally and sync when connection restores
+- **Privacy**: All data goes through PII redaction before upload
+
+### Agent Detection
+
+The wrapper automatically detects and tags sessions based on:
+
+| Detection Source | Examples |
+|------------------|----------|
+| Environment Variables | `MUSE_LEADER`, `CIRCUIT_AGENT`, `OPENAI_API_KEY` |
+| CLI Flags | `--muse`, `--circuit`, `--subagent` |
+| Content Patterns | "MUSE orchestration", "circuit issue #123" |
+
+Detected agent types: `user`, `clawdbot`, `openclaw`, `subagent`, `muse-leader`, `muse-subagent`, `circuit-agent`, `system`
+
+Detected API providers: `openai`, `anthropic`, `google`, `azure`, `cohere`, `mistral`, `groq`, `together`, `ollama`
+
 ## Architecture
 
 ```
@@ -200,10 +258,25 @@ extension/
     tribe-runner.ts     # CLI binary executor (spawn, timeout, JSON parsing)
     context-builder.ts  # Session + KB queries, context formatting
     knowledge-capture.ts # Conversation analysis, category/tag detection, KB save
+    telemetry-client.ts # Telemetry event queue and server communication
+    oauth-client.ts     # Browser-based OAuth flow for tribecode.ai
+    session-sync.ts     # Session upload/download and sync state
+    agent-detector.ts   # Agent type and API provider detection
+    interaction-logger.ts # Multi-actor session logging
+    intelligent-cache.ts  # L1/L2 caching with TTL and invalidation
+    metrics-tracker.ts    # Performance metrics and anomaly detection
+    pii-redactor.ts       # PII detection and redaction
+  bin/
+    tribe-wrapper       # CLI wrapper routing custom commands
+    tribe-auth          # Authentication CLI
+    tribe-sync          # Session sync CLI
+    tribe-logs          # Interaction log viewer
 skill/
   SKILL.md              # Skill definition for the tribe CLI
 test-components.ts      # Component tests (~96 assertions)
 test-e2e.ts             # End-to-end tests (~30 assertions)
+test-telemetry.ts       # Telemetry client tests (35 assertions)
+test-cli-wrapper.ts     # CLI wrapper integration tests (59 assertions)
 ```
 
 ### Data Flow
@@ -235,6 +308,47 @@ Conversation ──────────────────────�
                                     tribe kb save ──────> TRIBE KB
 ```
 
+### Telemetry & Sync Flow
+
+```
+                          Session Events
+interaction-logger.ts ─────────────────────> telemetry-client.ts
+                                                    │
+                                              Event Queue
+                                              (batched)
+                                                    │
+                               ┌────────────────────┴────────────────────┐
+                               │                                         │
+                         oauth-client.ts                          session-sync.ts
+                         (auth tokens)                            (session data)
+                               │                                         │
+                               └─────────────┬───────────────────────────┘
+                                             │
+                                    tutor.tribecode.ai
+                                             │
+                               ┌─────────────┴─────────────┐
+                               │                           │
+                         /api/v1/telemetry          /api/v1/sessions
+```
+
+### Agent Detection Flow
+
+```
+Environment ──────┐
+                  │
+CLI Args ─────────┼──────> agent-detector.ts ──────> Detection Result
+                  │               │                        │
+Content ──────────┘               │                        ├── agentType
+                                  │                        ├── apiProvider
+                            API Key Check                  ├── tags[]
+                                  │                        └── confidence
+                                  v
+                         OPENAI_API_KEY? ──> openai
+                         ANTHROPIC_API_KEY? ──> anthropic
+                         GOOGLE_API_KEY? ──> google
+                         ...
+```
+
 ### CLI Communication
 
 The plugin communicates with TRIBE through the binary at `~/.tribe/bin/tribe`. Each call is executed via `child_process.execFile` with:
@@ -257,6 +371,17 @@ The plugin communicates with TRIBE through the binary at `~/.tribe/bin/tribe`. E
 - **Local by default**: TRIBE stores data in an encrypted SQLite database at `~/.tribe/`
 - **Cloud sync (opt-in)**: When authenticated, data syncs to tribecode.ai with end-to-end encryption and automatic PII scrubbing
 - **No third-party sharing**: TRIBE does not sell data to third parties
+
+**Local file locations:**
+
+| File | Purpose |
+|------|---------|
+| `~/.tribe/config.json` | Configuration (server URLs, sync mode) |
+| `~/.tribe/tutor/auth.json` | OAuth tokens and user info |
+| `~/.tribe/logs/` | Interaction logs (current + archived sessions) |
+| `~/.tribe/sync-state.json` | Sync state (pending, synced sessions) |
+| `~/.tribe/telemetry-queue.json` | Queued telemetry events (offline support) |
+| `~/.tribe/cache/` | Intelligent cache (L2 disk storage) |
 
 ### Automatic PII scrubbing
 
@@ -284,7 +409,7 @@ For the full privacy policy, see [tribecode.ai/privacy](https://tribecode.ai/pri
 
 ## Testing
 
-The repo includes two test suites that exercise the plugin against a real TRIBE CLI installation.
+The repo includes multiple test suites that exercise the plugin against a real TRIBE CLI installation.
 
 ### Component Tests
 
@@ -301,6 +426,30 @@ npx tsx test-e2e.ts
 ```
 
 Exercises the full pipeline with real CLI calls: session queries, context injection round-trips, knowledge capture round-trips, and graceful degradation. ~30 assertions.
+
+### Telemetry Tests
+
+```bash
+npx tsx extension/test-telemetry.ts
+```
+
+Tests the telemetry client: event queue, batch flush, auth token management, enable/disable, and queue persistence. 35 assertions.
+
+### CLI Wrapper Integration Tests
+
+```bash
+npx tsx extension/test-cli-wrapper.ts
+```
+
+Full integration tests for all CLI wrapper components: telemetry client, OAuth client, session sync, agent detector, and end-to-end flow. 59 assertions.
+
+### Integration Tests
+
+```bash
+npx tsx extension/test-integrations.ts
+```
+
+Tests for PII redaction, intelligent cache, performance metrics, and knowledge hierarchy. ~65 assertions.
 
 ### Type Check
 
