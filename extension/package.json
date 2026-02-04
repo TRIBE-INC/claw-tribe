@@ -10,6 +10,7 @@
     "clawdbot": ">=2026.1.0"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.0"
+    "@sinclair/typebox": "^0.34.0",
+    "tsx": "^4.0.0"
   }
 }

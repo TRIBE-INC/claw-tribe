@@ -8,13 +8,20 @@
 # Custom commands:
 #   logs  - View interaction logs between User, ClawdBot, and agents
 #   auth  - OAuth authentication for tribecode.ai
-#   sync  - Sync sessions with tutor.tribecode.ai (coming soon)
+#   sync  - Sync sessions with tutor.tribecode.ai
 
 TRIBE_BIN="$HOME/.tribe/bin/tribe"
 BIN_DIR="$(dirname "$0")"
+EXT_DIR="$(dirname "$BIN_DIR")"
 LOGS_SCRIPT="$BIN_DIR/tribe-logs"
 AUTH_SCRIPT="$BIN_DIR/tribe-auth"
 SYNC_SCRIPT="$BIN_DIR/tribe-sync"
+
+# Use local tsx from node_modules, fallback to npx
+TSX_BIN="$EXT_DIR/node_modules/.bin/tsx"
+if [ ! -f "$TSX_BIN" ]; then
+    TSX_BIN="npx tsx"
+fi
 
 case "$1" in
     logs)
@@ -29,7 +36,7 @@ case "$1" in
     auth)
         shift
         if [ -f "$AUTH_SCRIPT" ]; then
-            npx tsx "$AUTH_SCRIPT" "$@"
+            $TSX_BIN "$AUTH_SCRIPT" "$@"
         else
             echo "Error: tribe-auth script not found at $AUTH_SCRIPT"
             exit 1
@@ -38,10 +45,9 @@ case "$1" in
     sync)
         shift
         if [ -f "$SYNC_SCRIPT" ]; then
-            npx tsx "$SYNC_SCRIPT" "$@"
+            $TSX_BIN "$SYNC_SCRIPT" "$@"
         else
             echo "Error: tribe-sync script not found at $SYNC_SCRIPT"
-            echo "This feature is coming soon."
             exit 1
         fi
         ;;
