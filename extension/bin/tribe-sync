@@ -1,0 +1,180 @@
+#!/usr/bin/env node
+
+/**
+ * Tribe Sync CLI - Sync sessions with tutor.tribecode.ai
+ *
+ * Usage:
+ *   tribe sync              # Sync pending sessions
+ *   tribe sync --status     # Show sync status
+ *   tribe sync --force      # Force full re-sync
+ *   tribe sync --auto       # Toggle auto-sync
+ */
+
+import { SessionSync, getSessionSync } from '../lib/session-sync.js';
+import { OAuthClient } from '../lib/oauth-client.js';
+import { Logger } from '../lib/logger.js';
+
+// ANSI colors
+const colors = {
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+  dim: '\x1b[2m',
+  bold: '\x1b[1m',
+  reset: '\x1b[0m',
+};
+
+function formatTime(timestamp) {
+  if (!timestamp) return 'Never';
+  const date = new Date(timestamp);
+  const now = Date.now();
+  const diff = now - timestamp;
+
+  if (diff < 60000) return 'Just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return date.toLocaleString();
+}
+
+function showHelp() {
+  console.log(`
+${colors.bold}tribe sync${colors.reset} - Sync sessions with TribeCode server
+
+${colors.bold}USAGE${colors.reset}
+  tribe sync [options]
+
+${colors.bold}OPTIONS${colors.reset}
+  --status    Show sync status
+  --force     Force sync all sessions (re-upload all)
+  --auto      Toggle auto-sync
+  --help, -h  Show this help
+
+${colors.bold}EXAMPLES${colors.reset}
+  tribe sync              # Sync pending sessions
+  tribe sync --status     # Check sync status
+  tribe sync --force      # Re-sync everything
+
+${colors.bold}NOTES${colors.reset}
+  - Requires authentication (run 'tribe auth login' first)
+  - Sessions are synced to ${colors.cyan}tutor.tribecode.ai${colors.reset}
+  - Sync state stored at ~/.tribe/sync-state.json
+`);
+}
+
+async function checkAuth() {
+  const oauth = new OAuthClient();
+  await oauth.init();
+  const status = await oauth.getStatus();
+
+  if (!status.authenticated) {
+    console.log(`${colors.red}Not authenticated.${colors.reset}`);
+    console.log(`Run '${colors.cyan}tribe auth login${colors.reset}' first.`);
+    process.exit(1);
+  }
+
+  return status;
+}
+
+async function showStatus() {
+  await checkAuth();
+
+  const sync = getSessionSync();
+  await sync.init();
+  const status = sync.getSyncStatus();
+
+  console.log(`\n${colors.bold}TribeCode Sync Status${colors.reset}`);
+  console.log(`${colors.dim}─────────────────────────────────${colors.reset}`);
+  console.log(`  Last sync:    ${formatTime(status.lastSyncTime)}`);
+  console.log(`  Synced:       ${status.syncedCount} sessions`);
+  console.log(`  Pending:      ${status.pendingCount} sessions`);
+  console.log(`  Auto-sync:    ${status.autoSyncEnabled ? `${colors.green}Enabled${colors.reset}` : `${colors.dim}Disabled${colors.reset}`}`);
+  console.log(`  Status:       ${status.isSyncing ? `${colors.yellow}Syncing...${colors.reset}` : `${colors.green}Idle${colors.reset}`}`);
+  console.log(`${colors.dim}─────────────────────────────────${colors.reset}\n`);
+}
+
+async function doSync(force = false) {
+  const auth = await checkAuth();
+
+  const logger = new Logger('tribe-sync');
+  const sync = new SessionSync(logger);
+  await sync.init();
+
+  console.log(`${colors.cyan}Syncing sessions...${colors.reset}`);
+  if (force) {
+    console.log(`${colors.dim}(Force mode: re-uploading all sessions)${colors.reset}`);
+  }
+
+  const startTime = Date.now();
+  const result = await sync.sync({ force });
+  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+
+  console.log(`\n${colors.bold}Sync Complete${colors.reset} ${colors.dim}(${duration}s)${colors.reset}`);
+  console.log(`${colors.dim}─────────────────────────────────${colors.reset}`);
+  console.log(`  Uploaded:   ${result.uploaded > 0 ? colors.green : ''}${result.uploaded} sessions${colors.reset}`);
+  console.log(`  Downloaded: ${result.downloaded > 0 ? colors.green : ''}${result.downloaded} sessions${colors.reset}`);
+  console.log(`  Conflicts:  ${result.conflicts > 0 ? colors.yellow : ''}${result.conflicts}${colors.reset}`);
+
+  if (result.errors.length > 0) {
+    console.log(`  ${colors.red}Errors:${colors.reset}`);
+    for (const error of result.errors.slice(0, 5)) {
+      console.log(`    - ${error}`);
+    }
+    if (result.errors.length > 5) {
+      console.log(`    ${colors.dim}... and ${result.errors.length - 5} more${colors.reset}`);
+    }
+  }
+
+  console.log(`${colors.dim}─────────────────────────────────${colors.reset}\n`);
+
+  if (result.errors.length > 0 && result.uploaded === 0 && result.downloaded === 0) {
+    process.exit(1);
+  }
+}
+
+async function toggleAutoSync() {
+  await checkAuth();
+
+  const sync = getSessionSync();
+  await sync.init();
+  const status = sync.getSyncStatus();
+
+  if (status.autoSyncEnabled) {
+    sync.stopAutoSync();
+    console.log(`${colors.yellow}Auto-sync disabled.${colors.reset}`);
+  } else {
+    sync.startAutoSync();
+    console.log(`${colors.green}Auto-sync enabled.${colors.reset}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  if (args.includes('--help') || args.includes('-h')) {
+    showHelp();
+    return;
+  }
+
+  if (args.includes('--status')) {
+    await showStatus();
+    return;
+  }
+
+  if (args.includes('--auto')) {
+    await toggleAutoSync();
+    return;
+  }
+
+  const force = args.includes('--force') || args.includes('-f');
+  await doSync(force);
+}
+
+main().catch((err) => {
+  console.error(`${colors.red}Error:${colors.reset} ${err.message}`);
+  process.exit(1);
+});

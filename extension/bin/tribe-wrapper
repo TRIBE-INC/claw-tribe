@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Tribe Wrapper - Extends tribe CLI with custom commands
+#
+# This wrapper intercepts custom commands and routes them to our handlers,
+# while passing all other commands to the real tribe CLI.
+#
+# Custom commands:
+#   logs  - View interaction logs between User, ClawdBot, and agents
+#   auth  - OAuth authentication for tribecode.ai
+#   sync  - Sync sessions with tutor.tribecode.ai (coming soon)
+
+TRIBE_BIN="$HOME/.tribe/bin/tribe"
+BIN_DIR="$(dirname "$0")"
+LOGS_SCRIPT="$BIN_DIR/tribe-logs"
+AUTH_SCRIPT="$BIN_DIR/tribe-auth"
+SYNC_SCRIPT="$BIN_DIR/tribe-sync"
+
+case "$1" in
+    logs)
+        shift
+        if [ -f "$LOGS_SCRIPT" ]; then
+            node "$LOGS_SCRIPT" "$@"
+        else
+            echo "Error: tribe-logs script not found at $LOGS_SCRIPT"
+            exit 1
+        fi
+        ;;
+    auth)
+        shift
+        if [ -f "$AUTH_SCRIPT" ]; then
+            npx tsx "$AUTH_SCRIPT" "$@"
+        else
+            echo "Error: tribe-auth script not found at $AUTH_SCRIPT"
+            exit 1
+        fi
+        ;;
+    sync)
+        shift
+        if [ -f "$SYNC_SCRIPT" ]; then
+            npx tsx "$SYNC_SCRIPT" "$@"
+        else
+            echo "Error: tribe-sync script not found at $SYNC_SCRIPT"
+            echo "This feature is coming soon."
+            exit 1
+        fi
+        ;;
+    *)
+        # Pass through to real tribe CLI
+        if [ -f "$TRIBE_BIN" ]; then
+            "$TRIBE_BIN" "$@"
+        else
+            echo "Error: tribe CLI not found at $TRIBE_BIN"
+            echo "Run 'tribe_setup' to install it."
+            exit 1
+        fi
+        ;;
+esac

@@ -1,0 +1,209 @@
+#!/usr/bin/env node
+
+/**
+ * Tribe Auth CLI - OAuth authentication for tribecode.ai
+ *
+ * Usage:
+ *   tribe auth login    # Start OAuth flow
+ *   tribe auth status   # Check auth status
+ *   tribe auth logout   # Clear tokens
+ *   tribe auth refresh  # Manually refresh token
+ */
+
+import { OAuthClient } from '../lib/oauth-client.js';
+import { Logger } from '../lib/logger.js';
+
+// ANSI colors
+const colors = {
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+  dim: '\x1b[2m',
+  bold: '\x1b[1m',
+  reset: '\x1b[0m',
+};
+
+function formatDate(timestamp) {
+  return new Date(timestamp).toLocaleString();
+}
+
+function showHelp() {
+  console.log(`
+${colors.bold}tribe auth${colors.reset} - Authentication for TribeCode
+
+${colors.bold}USAGE${colors.reset}
+  tribe auth <command>
+
+${colors.bold}COMMANDS${colors.reset}
+  login     Start OAuth login flow (opens browser)
+  logout    Clear authentication tokens
+  status    Show current authentication status
+  refresh   Manually refresh the access token
+  whoami    Show current user information
+
+${colors.bold}EXAMPLES${colors.reset}
+  tribe auth login      # Login via browser
+  tribe auth status     # Check if logged in
+  tribe auth logout     # Log out
+
+${colors.bold}NOTES${colors.reset}
+  - Login opens your default browser for authentication
+  - Tokens are stored at ~/.tribe/tutor/auth.json
+  - Tokens auto-refresh when used by CLI tools
+`);
+}
+
+async function login() {
+  const logger = new Logger('tribe-auth');
+  const client = new OAuthClient(logger);
+
+  console.log(`${colors.cyan}Starting OAuth login...${colors.reset}`);
+  console.log(`${colors.dim}Opening browser for authentication...${colors.reset}\n`);
+
+  try {
+    const tokens = await client.login();
+
+    console.log(`\n${colors.green}${colors.bold}Login successful!${colors.reset}`);
+    console.log(`${colors.dim}─────────────────────────────────${colors.reset}`);
+    console.log(`  Name:  ${tokens.user_info.name}`);
+    console.log(`  Email: ${tokens.user_info.email}`);
+    console.log(`  ID:    ${tokens.user_info.id}`);
+    console.log(`${colors.dim}─────────────────────────────────${colors.reset}`);
+    console.log(`\nYou can now use TribeCode CLI tools.`);
+  } catch (error) {
+    console.error(`\n${colors.red}Login failed:${colors.reset} ${error.message}`);
+    process.exit(1);
+  }
+}
+
+async function logout() {
+  const client = new OAuthClient();
+  await client.init();
+
+  const status = await client.getStatus();
+  if (!status.authenticated) {
+    console.log(`${colors.yellow}Not logged in.${colors.reset}`);
+    return;
+  }
+
+  await client.clearTokens();
+  console.log(`${colors.green}Logged out successfully.${colors.reset}`);
+}
+
+async function status() {
+  const client = new OAuthClient();
+  await client.init();
+
+  const authStatus = await client.getStatus();
+
+  console.log(`\n${colors.bold}TribeCode Authentication Status${colors.reset}`);
+  console.log(`${colors.dim}─────────────────────────────────${colors.reset}`);
+
+  if (authStatus.authenticated) {
+    console.log(`  Status: ${colors.green}Authenticated${colors.reset}`);
+    console.log(`  Name:   ${authStatus.name}`);
+    console.log(`  Email:  ${authStatus.email}`);
+    console.log(`  ID:     ${authStatus.userId}`);
+    console.log(`  Server: ${authStatus.serverUrl}`);
+    if (authStatus.expiresAt) {
+      const now = Date.now();
+      const remaining = authStatus.expiresAt - now;
+      const days = Math.floor(remaining / (24 * 60 * 60 * 1000));
+      const hours = Math.floor((remaining % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+
+      let expiryText;
+      if (remaining < 0) {
+        expiryText = `${colors.red}Expired${colors.reset}`;
+      } else if (days > 0) {
+        expiryText = `${days}d ${hours}h remaining`;
+      } else {
+        expiryText = `${hours}h remaining`;
+      }
+
+      console.log(`  Expires: ${formatDate(authStatus.expiresAt)} (${expiryText})`);
+    }
+  } else {
+    console.log(`  Status: ${colors.red}Not authenticated${colors.reset}`);
+    console.log(`  Server: ${authStatus.serverUrl}`);
+    console.log(`\n  Run '${colors.cyan}tribe auth login${colors.reset}' to authenticate.`);
+  }
+
+  console.log(`${colors.dim}─────────────────────────────────${colors.reset}\n`);
+}
+
+async function refresh() {
+  const client = new OAuthClient();
+  await client.init();
+
+  const authStatus = await client.getStatus();
+  if (!authStatus.authenticated) {
+    console.log(`${colors.yellow}Not logged in. Run 'tribe auth login' first.${colors.reset}`);
+    process.exit(1);
+  }
+
+  console.log(`${colors.cyan}Refreshing token...${colors.reset}`);
+
+  const success = await client.refreshToken();
+  if (success) {
+    console.log(`${colors.green}Token refreshed successfully.${colors.reset}`);
+  } else {
+    console.log(`${colors.red}Failed to refresh token. Try 'tribe auth login' again.${colors.reset}`);
+    process.exit(1);
+  }
+}
+
+async function whoami() {
+  const client = new OAuthClient();
+  await client.init();
+
+  const authStatus = await client.getStatus();
+
+  if (!authStatus.authenticated) {
+    console.log(`${colors.red}Not logged in.${colors.reset}`);
+    process.exit(1);
+  }
+
+  console.log(`${authStatus.name} <${authStatus.email}>`);
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const args = process.argv.slice(2);
+  const command = args[0];
+
+  if (!command || command === '--help' || command === '-h') {
+    showHelp();
+    return;
+  }
+
+  switch (command) {
+    case 'login':
+      await login();
+      break;
+    case 'logout':
+      await logout();
+      break;
+    case 'status':
+      await status();
+      break;
+    case 'refresh':
+      await refresh();
+      break;
+    case 'whoami':
+      await whoami();
+      break;
+    default:
+      console.error(`${colors.red}Unknown command: ${command}${colors.reset}`);
+      console.error(`Run 'tribe auth --help' for usage.`);
+      process.exit(1);
+  }
+}
+
+main().catch((err) => {
+  console.error(`${colors.red}Error:${colors.reset} ${err.message}`);
+  process.exit(1);
+});
