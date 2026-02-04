@@ -386,12 +386,13 @@ export class SessionSync {
         toDownload.push(serverSession.id);
       } else if (!conflicts.includes(serverSession.id)) {
         // Not already handled as a conflict
-        if (serverSession.lastModified > lastSynced && serverSession.entryCount > localInfo.entryCount) {
-          // Server has newer version with more entries (and no local changes)
-          const localModified = localInfo.mtime > lastSynced;
-          if (!localModified) {
-            toDownload.push(serverSession.id);
-          }
+        // Download if server has newer version and no local changes
+        const serverModified = serverSession.lastModified > lastSynced;
+        const localModified = localInfo.mtime > lastSynced;
+
+        if (serverModified && !localModified) {
+          // Server is newer and no local changes, safe to download
+          toDownload.push(serverSession.id);
         }
       }
     }
