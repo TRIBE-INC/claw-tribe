@@ -407,6 +407,16 @@ You can also disable specific plugin features via configuration:
 
 For the full privacy policy, see [tribecode.ai/privacy](https://tribecode.ai/privacy).
 
+## Verification
+
+To verify claw-tribe is working and OpenClaw messages are tracked:
+
+```bash
+npx tsx scripts/verify-claw-tribe.ts
+```
+
+See [VERIFY.md](VERIFY.md) for a full checklist and troubleshooting.
+
 ## Testing
 
 The repo includes multiple test suites that exercise the plugin against a real TRIBE CLI installation.
