@@ -3,6 +3,9 @@ import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
 import { ensureInstalled, checkAuthStatus, run, runJson, runText } from "./lib/tribe-runner.js";
 import { buildContext, invalidateCache, type ContextDepth } from "./lib/context-builder.js";
 import { captureConversation } from "./lib/knowledge-capture.js";
+import { diagnose, formatDiagnostic } from "./lib/error-diagnostics.js";
+import { getCache } from "./lib/intelligent-cache.js";
+import { getMetrics } from "./lib/metrics-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -467,6 +470,7 @@ function kbTools(): ToolDef[] {
           ["-beta", "kb", "save", String(params.content)],
           { timeout: "default" },
         );
+        getCache().invalidate("kb").catch(() => {});
         return textResult(out);
       },
     },
@@ -497,6 +501,7 @@ function kbTools(): ToolDef[] {
           ["-beta", "kb", "delete", String(params.docId)],
           { timeout: "fast" },
         );
+        getCache().invalidate("kb").catch(() => {});
         return textResult(out);
       },
     },
@@ -608,6 +613,36 @@ function museTools(): ToolDef[] {
         return textResult(out);
       },
     },
+    {
+      name: "tribe_muse_review",
+      label: "Tribe MUSE Review",
+      description: "Review the output and status of a MUSE subagent session.",
+      parameters: Type.Object({
+        session: Type.String({ description: "Subagent session name to review" }),
+      }),
+      async execute(_id, params) {
+        const out = await runText(
+          ["-beta", "muse", "review", String(params.session)],
+          { timeout: "slow" },
+        );
+        return textResult(out);
+      },
+    },
+    {
+      name: "tribe_muse_output",
+      label: "Tribe MUSE Output",
+      description: "Get the output of a MUSE subagent session, optionally limited to N lines.",
+      parameters: Type.Object({
+        session: Type.String({ description: "Subagent session name" }),
+        lines: Type.Optional(Type.Number({ description: "Number of output lines to return" })),
+      }),
+      async execute(_id, params) {
+        const args = ["-beta", "muse", "output", String(params.session)];
+        if (params.lines) args.push(String(params.lines));
+        const out = await runText(args, { timeout: "default" });
+        return textResult(out);
+      },
+    },
   ];
 }
 
@@ -675,6 +710,152 @@ function circuitTools(): ToolDef[] {
         if (params.interval) args.push("--interval", String(params.interval));
         const out = await runText(args, { timeout: "long" });
         return textResult(out);
+      },
+    },
+    {
+      name: "tribe_circuit_next",
+      label: "Tribe CIRCUIT Next",
+      description: "Advance to the next issue in the CIRCUIT queue, optionally forcing past limits.",
+      parameters: Type.Object({
+        force: Type.Optional(
+          Type.Boolean({ description: "Force past agent limits" }),
+        ),
+      }),
+      async execute(_id, params) {
+        const args = ["-beta", "circuit", "next"];
+        if (params.force) args.push("--force");
+        const out = await runText(args, { timeout: "slow" });
+        return textResult(out);
+      },
+    },
+  ];
+}
+
+function analysisTools(): ToolDef[] {
+  return [
+    {
+      name: "tribe_analyze_sessions",
+      label: "Tribe Analyze Sessions",
+      description:
+        "Analyze coding session patterns, trends, and statistics. Shows tool breakdown, " +
+        "project activity, busiest days, and trend observations.",
+      parameters: Type.Object({
+        timeRange: timeRangeParam,
+        limit: limitParam,
+        tool: toolFilterParam,
+        project: projectFilterParam,
+        format: formatParam,
+      }),
+      async execute(_id, params) {
+        const { analyzeSessions } = await import("./lib/session-analyzer.js");
+        const analysis = await analyzeSessions({
+          timeRange: params.timeRange ? String(params.timeRange) : undefined,
+          limit: params.limit ? Number(params.limit) : undefined,
+          tool: params.tool ? String(params.tool) : undefined,
+          project: params.project ? String(params.project) : undefined,
+        });
+
+        if (params.format === "json") {
+          return textResult(JSON.stringify(analysis, null, 2));
+        }
+
+        const lines: string[] = [];
+        lines.push("Session Analysis");
+        lines.push("================");
+        lines.push(`Total sessions: ${analysis.totalSessions}`);
+        lines.push(`Unique projects: ${analysis.uniqueProjects.length}`);
+        lines.push(`Total time: ${analysis.totalMinutes} minutes`);
+        lines.push(`Average session: ${analysis.avgMinutes} minutes`);
+        if (analysis.busiestDay) lines.push(`Busiest day: ${analysis.busiestDay}`);
+        if (analysis.topProject) lines.push(`Top project: ${analysis.topProject}`);
+
+        if (Object.keys(analysis.toolBreakdown).length > 0) {
+          lines.push("");
+          lines.push("Tool breakdown:");
+          for (const [tool, count] of Object.entries(analysis.toolBreakdown)) {
+            lines.push(`  ${tool}: ${count} sessions`);
+          }
+        }
+
+        if (analysis.observations.length > 0) {
+          lines.push("");
+          lines.push("Observations:");
+          for (const obs of analysis.observations) {
+            lines.push(`  - ${obs}`);
+          }
+        }
+
+        return textResult(lines.join("\n"));
+      },
+    },
+    {
+      name: "tribe_session_summary",
+      label: "Tribe Session Summary",
+      description:
+        "Summarize recent coding sessions with common themes extracted from session recalls.",
+      parameters: Type.Object({
+        count: Type.Optional(
+          Type.Number({ description: "Number of recent sessions to summarize (default: 5)" }),
+        ),
+        timeRange: timeRangeParam,
+        format: formatParam,
+      }),
+      async execute(_id, params) {
+        const { summarizeRecentSessions } = await import("./lib/session-analyzer.js");
+        const summary = await summarizeRecentSessions({
+          count: params.count ? Number(params.count) : undefined,
+          timeRange: params.timeRange ? String(params.timeRange) : undefined,
+        });
+
+        if (params.format === "json") {
+          return textResult(JSON.stringify(summary, null, 2));
+        }
+
+        const lines: string[] = [];
+        lines.push("Session Summary");
+        lines.push("===============");
+        lines.push(`Sessions analyzed: ${summary.sessionCount}`);
+
+        if (summary.themes.length > 0) {
+          lines.push("");
+          lines.push("Common themes:");
+          for (const theme of summary.themes) {
+            lines.push(`  - ${theme}`);
+          }
+        } else {
+          lines.push("No common themes detected.");
+        }
+
+        if (summary.recentIds.length > 0) {
+          lines.push("");
+          lines.push("Session IDs:");
+          for (const id of summary.recentIds) {
+            lines.push(`  ${id}`);
+          }
+        }
+
+        return textResult(lines.join("\n"));
+      },
+    },
+  ];
+}
+
+function metricsTools(): ToolDef[] {
+  return [
+    {
+      name: "tribe_metrics_summary",
+      label: "Tribe Metrics Summary",
+      description:
+        "Show usage metrics for TRIBE tools, context injection, and knowledge capture.",
+      parameters: Type.Object({
+        format: formatParam,
+      }),
+      async execute(_id, params) {
+        const metrics = getMetrics();
+        if (params.format === "json") {
+          return textResult(JSON.stringify(metrics.getData(), null, 2));
+        }
+        return textResult(metrics.getSummary());
       },
     },
   ];
@@ -767,6 +948,8 @@ const tribecodePlugin = {
       ...kbTools(),
       ...museTools(),
       ...circuitTools(),
+      ...metricsTools(),
+      ...analysisTools(),
     ];
 
     for (const tool of allTools) {
@@ -783,23 +966,27 @@ const tribecodePlugin = {
             }
             const status = await checkAuthStatus();
             if (status === "not-installed") {
-              return textResult(
-                "TRIBE CLI is not installed. Use the tribe_setup tool to install it automatically.",
-              );
+              const diag = diagnose("not installed", "tool execution");
+              return textResult(formatDiagnostic(diag));
             }
             // Let tools that work without auth proceed
             const noAuthRequired = [
               "tribe_status", "tribe_version", "tribe_enable", "tribe_disable", "tribe_auth_status",
             ];
             if (status === "not-authenticated" && !noAuthRequired.includes(tool.name)) {
-              return textResult(
-                "TRIBE CLI is not authenticated.\n\n" +
-                "To authenticate, run this in your terminal: tribe login\n\n" +
-                "Or use the tribe_setup tool for guided setup.\n\n" +
-                "Without login, TribeCode works in local-only mode (basic session data).",
-              );
+              const diag = diagnose("Not authenticated", "tool execution");
+              return textResult(formatDiagnostic(diag));
             }
-            return tool.execute(toolCallId, params);
+            const t0 = Date.now();
+            try {
+              const result = await tool.execute(toolCallId, params);
+              getMetrics().recordToolCall(tool.name, Date.now() - t0, false);
+              return result;
+            } catch (err) {
+              getMetrics().recordToolCall(tool.name, Date.now() - t0, true);
+              const diag = diagnose(err instanceof Error ? err : String(err), tool.name);
+              return textResult(formatDiagnostic(diag));
+            }
           },
         },
       );
@@ -817,6 +1004,7 @@ const tribecodePlugin = {
         const depth = pluginCfg?.contextDepth ?? "standard";
         const context = await buildContext(event.prompt, depth);
         if (!context) {
+          getMetrics().recordContextInjection(null);
           api.logger.debug("tribecode: no relevant context found for this prompt.");
           return;
         }
@@ -834,8 +1022,10 @@ const tribecodePlugin = {
         api.logger.info(
           `tribecode: injecting context (${parts.join(", ")}) — ${context.length} chars`,
         );
+        getMetrics().recordContextInjection(context.length);
         return { prependContext: context };
       } catch (err) {
+        getMetrics().recordContextInjection(null);
         api.logger.warn(`tribecode: context injection failed: ${String(err)}`);
       }
     });

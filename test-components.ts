@@ -12,9 +12,16 @@ import { buildContext, invalidateCache, type ContextDepth } from "./extension/li
 import { _testing as ctxTesting } from "./extension/lib/context-builder.js";
 import { captureConversation, _testing as kcTesting } from "./extension/lib/knowledge-capture.js";
 import { ensureInstalled, checkAuthStatus, run, runText, runJson } from "./extension/lib/tribe-runner.js";
+import { diagnose, formatDiagnostic, _testing as diagTesting } from "./extension/lib/error-diagnostics.js";
+import { _testing as cacheTesting } from "./extension/lib/intelligent-cache.js";
+import { _testing as metricsTesting } from "./extension/lib/metrics-tracker.js";
+import { _testing as analyzerTesting } from "./extension/lib/session-analyzer.js";
 
-const { extractJSON, extractSearchKeyword, formatTimestamp } = ctxTesting;
+const { extractJSON, extractSearchKeyword, extractSearchKeywords, formatTimestamp } = ctxTesting;
 const { extractTexts, isSubstantive, detectCategory, extractTags, buildSummary } = kcTesting;
+const { IntelligentCache } = cacheTesting;
+const { MetricsTracker } = metricsTesting;
+const { analyzeSessions, summarizeRecentSessions } = analyzerTesting;
 
 let passed = 0;
 let failed = 0;
@@ -179,6 +186,44 @@ function testExtractSearchKeyword() {
   // 3.6 Special characters
   const kw6 = extractSearchKeyword("what's the @best #approach?");
   assert(typeof kw6 === "string" && kw6.length > 0, "Handles special characters in prompt");
+}
+
+// ============================================================================
+// SECTION 3b: context-builder.ts — extractSearchKeywords (6 tests)
+// ============================================================================
+
+function testExtractSearchKeywords() {
+  console.log("\n--- 3b. extractSearchKeywords ---\n");
+
+  // 3b.1 Returns multiple keywords
+  const kws1 = extractSearchKeywords("how do I implement authentication with middleware");
+  assert(kws1.length > 1, "Returns multiple keywords", `got ${kws1.length}: ${kws1.join(", ")}`);
+
+  // 3b.2 Longest keyword first
+  const kws2 = extractSearchKeywords("implement authentication middleware");
+  assert(
+    kws2[0] === "authentication" || kws2[0] === "middleware",
+    "Longest keyword is first",
+    `got: ${kws2[0]}`,
+  );
+  assert(kws2[0].length >= kws2[kws2.length - 1].length, "Keywords sorted by score (length-based)");
+
+  // 3b.3 Count parameter limits results
+  const kws3 = extractSearchKeywords("authentication middleware database controller service", 2);
+  assert(kws3.length <= 2, "Count parameter limits results", `got ${kws3.length}`);
+
+  // 3b.4 Deduplication
+  const kws4 = extractSearchKeywords("auth auth auth database database");
+  const unique = new Set(kws4);
+  assert(unique.size === kws4.length, "Keywords are deduplicated", `${kws4.length} keywords, ${unique.size} unique`);
+
+  // 3b.5 Fallback for all-stop-word input
+  const kws5 = extractSearchKeywords("how do I the");
+  assert(kws5.length >= 1, "Returns at least one keyword for all-stop-word input");
+
+  // 3b.6 Single word input
+  const kws6 = extractSearchKeywords("kubernetes");
+  assert(kws6.length === 1 && kws6[0] === "kubernetes", "Single word input returns that word");
 }
 
 // ============================================================================
@@ -587,7 +632,7 @@ async function testIndexWiring() {
   // 8.5 plugin.json matches index.ts configSchema
   const fs = await import("node:fs/promises");
   const jsonSchema = JSON.parse(
-    await fs.readFile("/Users/almorris/TRIBE/openclaw/extension/clawdbot.plugin.json", "utf-8"),
+    await fs.readFile(new URL("./extension/clawdbot.plugin.json", import.meta.url).pathname, "utf-8"),
   );
   const jsonKeys = Object.keys(jsonSchema.configSchema.properties).sort();
   const tsKeys = Object.keys(props).sort();
@@ -615,19 +660,21 @@ async function testIndexWiring() {
   assert(hooksCalled.includes("before_agent_start"), "register() hooks before_agent_start");
   assert(hooksCalled.includes("agent_end"), "register() hooks agent_end");
 
-  // 8.7 Registers all 33 tools
+  // 8.7 Registers all 39 tools
   // setupTools: setup = 1
   // telemetryTools: enable, disable, status, version = 4
   // authTools: auth_status, logout = 2
   // searchTools: search, recall, extract, query_sessions, query_insights, query_events = 6
   // sessionTools: sessions_list, sessions_read, sessions_search = 3
   // kbTools: kb_search, kb_list, kb_save, kb_get, kb_delete, kb_stats = 6
-  // museTools: muse_start, muse_spawn, muse_status, muse_agents, muse_prompt, muse_kill = 6
-  // circuitTools: circuit_list, circuit_spawn, circuit_status, circuit_metrics, circuit_auto = 5
-  // Total: 1+4+2+6+3+6+6+5 = 33
+  // museTools: muse_start, muse_spawn, muse_status, muse_agents, muse_prompt, muse_kill, muse_review, muse_output = 8
+  // circuitTools: circuit_list, circuit_spawn, circuit_status, circuit_metrics, circuit_auto, circuit_next = 6
+  // metricsTools: metrics_summary = 1
+  // analysisTools: analyze_sessions, session_summary = 2
+  // Total: 1+4+2+6+3+6+8+6+1+2 = 39
   assert(
-    toolsRegistered.length === 33,
-    `register() registers all 33 tools (got ${toolsRegistered.length})`,
+    toolsRegistered.length === 39,
+    `register() registers all 39 tools (got ${toolsRegistered.length})`,
   );
 
   // tribe_setup is first (highest discovery priority)
@@ -635,6 +682,14 @@ async function testIndexWiring() {
     toolsRegistered[0] === "tribe_setup",
     "tribe_setup is the first registered tool",
   );
+
+  // New tools are registered
+  assert(toolsRegistered.includes("tribe_muse_review"), "tribe_muse_review is registered");
+  assert(toolsRegistered.includes("tribe_muse_output"), "tribe_muse_output is registered");
+  assert(toolsRegistered.includes("tribe_circuit_next"), "tribe_circuit_next is registered");
+  assert(toolsRegistered.includes("tribe_metrics_summary"), "tribe_metrics_summary is registered");
+  assert(toolsRegistered.includes("tribe_analyze_sessions"), "tribe_analyze_sessions is registered");
+  assert(toolsRegistered.includes("tribe_session_summary"), "tribe_session_summary is registered");
 
   // 8.8 Registers tribe-sync service
   assert(servicesRegistered.includes("tribe-sync"), "register() registers tribe-sync service");
@@ -836,6 +891,221 @@ async function testIndexWiring() {
 }
 
 // ============================================================================
+// SECTION 9: error-diagnostics.ts (8 tests)
+// ============================================================================
+
+function testErrorDiagnostics() {
+  console.log("\n--- 9. error-diagnostics.ts ---\n");
+
+  // 9.1 Diagnoses auth errors
+  const d1 = diagnose("Not authenticated");
+  assert(d1.category === "auth", "Diagnoses auth errors", d1.category);
+
+  // 9.2 Diagnoses not-installed errors
+  const d2 = diagnose("ENOENT: no such file or directory");
+  assert(d2.category === "not-installed", "Diagnoses not-installed errors", d2.category);
+
+  // 9.3 Diagnoses timeout errors
+  const d3 = diagnose("ETIMEDOUT waiting for response");
+  assert(d3.category === "timeout", "Diagnoses timeout errors", d3.category);
+
+  // 9.4 Diagnoses network errors
+  const d4 = diagnose("ECONNREFUSED 127.0.0.1:443");
+  assert(d4.category === "network", "Diagnoses network errors", d4.category);
+
+  // 9.5 Diagnoses CGO/parse errors
+  const d5 = diagnose("CGO_ENABLED=0 required for SQLite");
+  assert(d5.category === "parse-error", "Diagnoses CGO/parse errors", d5.category);
+
+  // 9.6 Falls back to unknown for unrecognized errors
+  const d6 = diagnose("something completely random 12345");
+  assert(d6.category === "unknown", "Falls back to unknown", d6.category);
+
+  // 9.7 formatDiagnostic produces multi-line output
+  const fmt = formatDiagnostic(d1);
+  assert(
+    fmt.includes("Suggested fixes:") && fmt.includes("- "),
+    "formatDiagnostic produces multi-line output with fixes",
+  );
+
+  // 9.8 Doc links included when available
+  const d7 = diagnose("ENOENT: not found");
+  const fmt2 = formatDiagnostic(d7);
+  assert(
+    fmt2.includes("Documentation:"),
+    "Doc links included when available",
+  );
+}
+
+// ============================================================================
+// SECTION 10: intelligent-cache.ts (7 tests)
+// ============================================================================
+
+async function testIntelligentCache() {
+  console.log("\n--- 10. intelligent-cache.ts ---\n");
+
+  // 10.1 L1 set/get works
+  const cache = new IntelligentCache();
+  cache.set("kb", "test-key", { data: "hello" });
+  const val1 = await cache.get<{ data: string }>("kb", "test-key");
+  assert(val1 !== undefined && val1.data === "hello", "L1 set/get works");
+
+  // 10.2 Cache hit returns correct value
+  const val2 = await cache.get<{ data: string }>("kb", "test-key");
+  assert(val2 !== undefined && val2.data === "hello", "Cache hit returns correct value");
+
+  // 10.3 Cache miss on different key
+  const val3 = await cache.get("kb", "nonexistent-key");
+  assert(val3 === undefined, "Cache miss on different key");
+
+  // 10.4 Invalidate clears namespace
+  cache.set("kb", "to-invalidate", "value");
+  await cache.invalidate("kb");
+  const val4 = await cache.get("kb", "to-invalidate");
+  assert(val4 === undefined, "Invalidate clears namespace");
+
+  // 10.5 InvalidateAll clears everything
+  cache.set("kb", "a", 1);
+  cache.set("sessions", "b", 2);
+  cache.set("search", "c", 3);
+  await cache.invalidateAll();
+  const val5a = await cache.get("kb", "a");
+  const val5b = await cache.get("sessions", "b");
+  const val5c = await cache.get("search", "c");
+  assert(
+    val5a === undefined && val5b === undefined && val5c === undefined,
+    "InvalidateAll clears everything",
+  );
+
+  // 10.6 Stats reports L1 size
+  const cache2 = new IntelligentCache();
+  cache2.set("kb", "x", 1);
+  cache2.set("sessions", "y", 2);
+  const stats = cache2.stats();
+  assert(stats.l1Size === 2, "Stats reports correct L1 size", `got ${stats.l1Size}`);
+
+  // 10.7 Namespace independence
+  const cache3 = new IntelligentCache();
+  cache3.set("kb", "shared-key", "kb-value");
+  cache3.set("sessions", "shared-key", "session-value");
+  const kbVal = await cache3.get("kb", "shared-key");
+  const sessVal = await cache3.get("sessions", "shared-key");
+  assert(
+    kbVal === "kb-value" && sessVal === "session-value",
+    "Namespace independence: same key, different namespaces",
+  );
+}
+
+// ============================================================================
+// SECTION 11: metrics-tracker.ts (6 tests)
+// ============================================================================
+
+function testMetricsTracker() {
+  console.log("\n--- 11. metrics-tracker.ts ---\n");
+
+  // 11.1 recordToolCall increments count
+  const m = new MetricsTracker();
+  m.recordToolCall("tribe_search", 100, false);
+  m.recordToolCall("tribe_search", 200, false);
+  const data1 = m.getData();
+  assert(
+    data1.tools["tribe_search"].count === 2,
+    "recordToolCall increments count",
+  );
+
+  // 11.2 Avg milliseconds calculation
+  assert(
+    data1.tools["tribe_search"].totalMs === 300,
+    "Total ms is sum of call durations",
+  );
+  const avgMs = data1.tools["tribe_search"].totalMs / data1.tools["tribe_search"].count;
+  assert(avgMs === 150, "Average ms calculation correct", `avg=${avgMs}`);
+
+  // 11.3 Error counting
+  m.recordToolCall("tribe_recall", 50, true);
+  m.recordToolCall("tribe_recall", 80, false);
+  const data2 = m.getData();
+  assert(data2.tools["tribe_recall"].errors === 1, "Error counting works");
+
+  // 11.4 Context injection metrics
+  m.recordContextInjection(500);
+  m.recordContextInjection(null);
+  m.recordContextInjection(300);
+  const data3 = m.getData();
+  assert(
+    data3.context.hits === 2 && data3.context.misses === 1 && data3.context.totalChars === 800,
+    "Context injection metrics correct",
+    `hits=${data3.context.hits} misses=${data3.context.misses} chars=${data3.context.totalChars}`,
+  );
+
+  // 11.5 getSummary produces readable output
+  const summary = m.getSummary();
+  assert(
+    summary.includes("TRIBE Metrics Summary") && summary.includes("tribe_search"),
+    "getSummary produces readable output",
+  );
+
+  // 11.6 Reset clears all metrics
+  m.reset();
+  const data4 = m.getData();
+  assert(
+    Object.keys(data4.tools).length === 0 &&
+    data4.context.hits === 0 &&
+    data4.capture.saved === 0,
+    "Reset clears all metrics",
+  );
+}
+
+// ============================================================================
+// SECTION 12: session-analyzer.ts (4 tests)
+// ============================================================================
+
+async function testSessionAnalyzer() {
+  console.log("\n--- 12. session-analyzer.ts ---\n");
+
+  // 12.1 analyzeSessions returns valid structure
+  const analysis = await analyzeSessions({ timeRange: "7d", limit: 5 });
+  assert(
+    typeof analysis.totalSessions === "number" &&
+    Array.isArray(analysis.uniqueProjects) &&
+    typeof analysis.toolBreakdown === "object" &&
+    typeof analysis.totalMinutes === "number" &&
+    typeof analysis.avgMinutes === "number" &&
+    Array.isArray(analysis.observations),
+    "analyzeSessions returns valid structure",
+    `${analysis.totalSessions} sessions`,
+  );
+
+  // 12.2 analyzeSessions never throws
+  let threw1 = false;
+  try {
+    await analyzeSessions({ timeRange: "invalid-range", limit: -1 });
+  } catch {
+    threw1 = true;
+  }
+  assert(!threw1, "analyzeSessions never throws");
+
+  // 12.3 summarizeRecentSessions returns valid structure
+  const summary = await summarizeRecentSessions({ count: 3, timeRange: "7d" });
+  assert(
+    typeof summary.sessionCount === "number" &&
+    Array.isArray(summary.themes) &&
+    Array.isArray(summary.recentIds),
+    "summarizeRecentSessions returns valid structure",
+    `${summary.sessionCount} sessions, ${summary.themes.length} themes`,
+  );
+
+  // 12.4 summarizeRecentSessions never throws
+  let threw2 = false;
+  try {
+    await summarizeRecentSessions({ count: 0 });
+  } catch {
+    threw2 = true;
+  }
+  assert(!threw2, "summarizeRecentSessions never throws");
+}
+
+// ============================================================================
 // Runner
 // ============================================================================
 
@@ -850,11 +1120,16 @@ async function main() {
   await testTribeRunner();
   testExtractJSON();
   testExtractSearchKeyword();
+  testExtractSearchKeywords();
   testFormatTimestamp();
   await testBuildContext();
   testKnowledgeCaptureAnalysis();
   await testCaptureConversation();
   await testIndexWiring();
+  testErrorDiagnostics();
+  await testIntelligentCache();
+  testMetricsTracker();
+  await testSessionAnalyzer();
 
   console.log(`\n=== Component Results: ${passed} passed, ${failed} failed, ${skipped} skipped ===\n`);
   if (failed > 0) process.exit(1);

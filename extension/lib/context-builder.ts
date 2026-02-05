@@ -1,4 +1,5 @@
 import { ensureInstalled, run } from "./tribe-runner.js";
+import { getCache } from "./intelligent-cache.js";
 
 // ---------------------------------------------------------------------------
 // JSON extraction — TRIBE CLI sometimes writes tips/warnings to stdout
@@ -149,22 +150,51 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * Extract the best single search keyword from a prompt.
- * TRIBE's KB search uses LIKE matching which doesn't handle multi-word
- * queries well. We pick the longest non-stop-word as the most distinctive term.
+ * Extract multiple search keywords from a prompt, scored by length + position.
+ * Returns up to `count` keywords, longest first, deduplicated.
  */
-function extractSearchKeyword(prompt: string): string {
+function extractSearchKeywords(prompt: string, count: number = 3): string[] {
   const words = prompt
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
 
-  if (words.length === 0) return prompt.trim().split(/\s+/)[0] || prompt;
+  if (words.length === 0) {
+    const fallback = prompt.trim().split(/\s+/)[0] || prompt;
+    return [fallback];
+  }
 
-  // Pick the longest word — longer words tend to be more distinctive
-  words.sort((a, b) => b.length - a.length);
-  return words[0];
+  // Score by length (primary) + position bonus (earlier = small boost)
+  const scored = words.map((w, i) => ({
+    word: w,
+    score: w.length * 10 + (words.length - i),
+  }));
+
+  // Deduplicate, keeping highest score
+  const seen = new Map<string, number>();
+  for (const { word, score } of scored) {
+    const existing = seen.get(word);
+    if (existing === undefined || score > existing) {
+      seen.set(word, score);
+    }
+  }
+
+  // Sort by score descending
+  const unique = Array.from(seen.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([word]) => word);
+
+  return unique.slice(0, count);
+}
+
+/**
+ * Extract the best single search keyword from a prompt.
+ * TRIBE's KB search uses LIKE matching which doesn't handle multi-word
+ * queries well. We pick the longest non-stop-word as the most distinctive term.
+ */
+function extractSearchKeyword(prompt: string): string {
+  return extractSearchKeywords(prompt, 1)[0];
 }
 
 async function runKBSearch(term: string): Promise<KBMatch[]> {
@@ -199,23 +229,41 @@ async function runKBSearch(term: string): Promise<KBMatch[]> {
 }
 
 async function searchKB(query: string): Promise<KBMatch[]> {
-  const keyword = extractSearchKeyword(query);
-  const results = await runKBSearch(keyword);
-  if (results.length > 0) return results;
+  // Check cache first
+  const cache = getCache();
+  const cached = await cache.get<KBMatch[]>("kb", query);
+  if (cached) return cached;
 
-  // Fallback: try the second-best keyword if the first yielded nothing
-  const words = query
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
-  words.sort((a, b) => b.length - a.length);
+  const keywords = extractSearchKeywords(query, 3);
 
-  if (words.length > 1 && words[1] !== keyword) {
-    return runKBSearch(words[1]);
+  // Run all keyword searches in parallel
+  const allResults = await Promise.all(keywords.map((kw) => runKBSearch(kw)));
+
+  // Merge results by doc ID, rank by match frequency
+  const docMap = new Map<string, { match: KBMatch; freq: number }>();
+  for (const results of allResults) {
+    for (const match of results) {
+      const existing = docMap.get(match.id);
+      if (existing) {
+        existing.freq++;
+      } else {
+        docMap.set(match.id, { match, freq: 1 });
+      }
+    }
   }
 
-  return [];
+  // Sort by frequency (most keyword hits first), return top 5
+  const merged = Array.from(docMap.values())
+    .sort((a, b) => b.freq - a.freq)
+    .slice(0, 5)
+    .map((entry) => entry.match);
+
+  // Store in cache
+  if (merged.length > 0) {
+    cache.set("kb", query, merged);
+  }
+
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +379,10 @@ export async function buildContext(
  */
 export function invalidateCache(): void {
   sessionCache = null;
+  const cache = getCache();
+  cache.invalidate("kb").catch(() => {});
+  cache.invalidate("sessions").catch(() => {});
 }
 
 // Exported for unit testing only — not part of the public API.
-export const _testing = { extractJSON, extractSearchKeyword, formatTimestamp };
+export const _testing = { extractJSON, extractSearchKeyword, extractSearchKeywords, formatTimestamp };
