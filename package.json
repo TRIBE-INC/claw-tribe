@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "muse-molthub",
+  "description": "Muse - AI coding analytics and agent orchestration for Moltbot",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

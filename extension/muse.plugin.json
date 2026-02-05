@@ -1,0 +1,30 @@
+{
+  "id": "muse",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "autoContext": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically inject TRIBE context before every agent turn"
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically capture Moltbot conversations to TRIBE KB"
+      },
+      "autoSync": {
+        "type": "boolean",
+        "default": false,
+        "description": "Run tribe sync in background every 5 minutes"
+      },
+      "contextDepth": {
+        "type": "string",
+        "enum": ["minimal", "standard", "deep"],
+        "default": "standard",
+        "description": "How much TRIBE context to inject (minimal=recent sessions, standard=+KB, deep=+full session details)"
+      }
+    }
+  }
+}
