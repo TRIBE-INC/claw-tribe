@@ -1,6 +1,6 @@
 ---
 name: muse
-description: "Never solve the same problem twice. Search your past sessions, build a personal knowledge base, and orchestrate parallel agents—all with perfect memory of your work. Deploy your own at tribeclaw.com."
+description: "Give ClawBot access to your team's entire coding history. Muse connects your past sessions, team knowledge, and project context—so ClawBot can actually help design features, mediate team discussions, and work autonomously across your codebase. Deploy at tribeclaw.com."
 metadata:
   moltbot:
     requires:
