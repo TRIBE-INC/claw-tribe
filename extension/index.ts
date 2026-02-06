@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import type { MoltbotPluginApi } from "moltbot/plugin-sdk";
+import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
 import { ensureInstalled, checkAuthStatus, run, runJson, runText } from "./lib/tribe-runner.js";
 import { buildContext, invalidateCache, type ContextDepth } from "./lib/context-builder.js";
 import { captureConversation } from "./lib/knowledge-capture.js";
@@ -718,7 +718,7 @@ const musePlugin = {
     },
   },
 
-  register(api: MoltbotPluginApi) {
+  register(api: ClawdbotPluginApi) {
     const pluginCfg = api.pluginConfig as {
       autoContext?: boolean;
       autoCapture?: boolean;

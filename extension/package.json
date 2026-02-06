@@ -2,12 +2,15 @@
   "name": "@tribecode/muse",
   "version": "1.0.0",
   "type": "module",
-  "description": "Muse - AI analytics and agent orchestration for Moltbot",
+  "description": "Muse - AI analytics and agent orchestration for Moltbot/Clawdbot",
+  "clawdbot": {
+    "extensions": ["./index.ts"]
+  },
   "moltbot": {
     "extensions": ["./index.ts"]
   },
   "peerDependencies": {
-    "moltbot": ">=2026.1.0"
+    "clawdbot": ">=2026.1.0"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.0"

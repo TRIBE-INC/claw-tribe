@@ -1,5 +1,5 @@
-declare module "moltbot/plugin-sdk" {
-  export interface MoltbotPluginApi {
+declare module "clawdbot/plugin-sdk" {
+  export interface ClawdbotPluginApi {
     id: string;
     name: string;
     version: string;
